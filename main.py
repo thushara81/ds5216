@@ -396,6 +396,53 @@ class PlayerDetectionSystem:
         # Process all downloaded videos
         return self.process_multiple_videos(video_paths, output_dir)
     
+    def process_multiple_videos(self, video_paths, output_dir='outputs'):
+        """
+        Process multiple videos.
+        
+        Args:
+            video_paths: List of paths to video files
+            output_dir: Directory to save outputs
+        
+        Returns:
+            Dictionary containing processing results for all videos
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(exist_ok=True)
+        
+        results = {}
+        for i, video_path in enumerate(video_paths, 1):
+            print(f"\n{'='*60}")
+            print(f"Processing video {i}/{len(video_paths)}: {video_path}")
+            print(f"{'='*60}\n")
+            
+            video_path = Path(video_path)
+            output_video = output_dir / f"{video_path.stem}_processed.mp4"
+            
+            try:
+                result = self.process_video(
+                    video_path,
+                    output_path=output_video,
+                    visualize=True,
+                    save_annotations=True,
+                    detect_poses=True
+                )
+                results[str(video_path)] = result
+            except Exception as e:
+                print(f"Error processing {video_path}: {e}")
+                results[str(video_path)] = {'error': str(e)}
+        
+        # Save summary
+        summary_path = output_dir / 'processing_summary.json'
+        with open(summary_path, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print(f"\n{'='*60}")
+        print(f"All videos processed! Summary saved to: {summary_path}")
+        print(f"{'='*60}\n")
+        
+        return results
+    
     def cleanup_temp_videos(self):
         """
         Clean up temporary video directory.
