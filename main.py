@@ -21,7 +21,7 @@ class PlayerDetectionSystem:
     """
     
     def __init__(self, detection_model='yolov8n.pt', pose_model='yolov8n-pose.pt', 
-                 repo_path='.', video_branch='video'):
+                 repo_path='.', video_branch='videos'):
         """
         Initialize the detection system.
         
@@ -29,7 +29,7 @@ class PlayerDetectionSystem:
             detection_model: Path to YOLO detection model (or model name to download)
             pose_model: Path to YOLO pose estimation model (or model name to download)
             repo_path: Path to the git repository (default: current directory)
-            video_branch: Name of the branch containing videos (default: 'video')
+            video_branch: Name of the branch containing videos (default: 'videos')
         """
         print("Loading models...")
         self.detector = YOLO(detection_model)
@@ -40,20 +40,61 @@ class PlayerDetectionSystem:
         self.video_branch = video_branch
         self.video_dir = Path('videos_temp')
         
-    def fetch_videos_from_branch(self):
+    def fetch_videos_from_branch(self, fallback_to_local=True, local_video_dir='videos'):
         """
         Fetch video files from the video branch without switching branches.
         Uses git checkout to extract files from specific branch.
+        Falls back to local directory if branch doesn't exist.
+        
+        Args:
+            fallback_to_local: If True, look for videos in local directory if branch fails
+            local_video_dir: Local directory to check for videos if branch fetch fails
         """
         try:
+            # First, try to fetch from remote
+            print(f"Fetching latest from remote...")
+            subprocess.run(
+                ['git', 'fetch', '--all'],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
+            
             # Create temporary directory for videos
             self.video_dir.mkdir(exist_ok=True)
             
             print(f"Fetching videos from '{self.video_branch}' branch...")
             
+            # Check if branch exists (check both local and remote)
+            branch_check = subprocess.run(
+                ['git', 'rev-parse', '--verify', f'origin/{self.video_branch}'],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
+            
+            if branch_check.returncode != 0:
+                # Try without origin prefix
+                branch_check = subprocess.run(
+                    ['git', 'rev-parse', '--verify', self.video_branch],
+                    cwd=self.repo_path,
+                    capture_output=True,
+                    text=True
+                )
+                branch_name = self.video_branch
+            else:
+                branch_name = f'origin/{self.video_branch}'
+            
+            if branch_check.returncode != 0:
+                print(f"⚠ Branch '{self.video_branch}' not found!")
+                if fallback_to_local:
+                    print(f"Trying to load videos from local directory: {local_video_dir}")
+                    return self._load_local_videos(local_video_dir)
+                return []
+            
             # Get list of video files in the video branch
             result = subprocess.run(
-                ['git', 'ls-tree', '-r', '--name-only', self.video_branch],
+                ['git', 'ls-tree', '-r', '--name-only', branch_name],
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
@@ -64,7 +105,11 @@ class PlayerDetectionSystem:
             video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
             video_files = [f for f in all_files if any(f.lower().endswith(ext) for ext in video_extensions)]
             
-            print(f"Found {len(video_files)} video files in '{self.video_branch}' branch")
+            print(f"Found {len(video_files)} video files in '{branch_name}' branch")
+            
+            if len(video_files) == 0 and fallback_to_local:
+                print(f"No videos found in branch. Trying local directory: {local_video_dir}")
+                return self._load_local_videos(local_video_dir)
             
             # Checkout each video file from the video branch
             downloaded_videos = []
@@ -74,7 +119,7 @@ class PlayerDetectionSystem:
                     
                     # Use git show to get file content from specific branch
                     subprocess.run(
-                        ['git', 'show', f'{self.video_branch}:{video_file}'],
+                        ['git', 'show', f'{branch_name}:{video_file}'],
                         cwd=self.repo_path,
                         stdout=open(output_path, 'wb'),
                         check=True
@@ -91,11 +136,51 @@ class PlayerDetectionSystem:
             
         except subprocess.CalledProcessError as e:
             print(f"Error accessing git repository: {e}")
-            print(f"Make sure you're in a git repository and '{self.video_branch}' branch exists")
+            if fallback_to_local:
+                print(f"Trying to load videos from local directory: {local_video_dir}")
+                return self._load_local_videos(local_video_dir)
             return []
         except Exception as e:
             print(f"Unexpected error: {e}")
+            if fallback_to_local:
+                print(f"Trying to load videos from local directory: {local_video_dir}")
+                return self._load_local_videos(local_video_dir)
             return []
+    
+    def _load_local_videos(self, video_dir):
+        """
+        Load videos from a local directory as fallback.
+        
+        Args:
+            video_dir: Directory containing video files
+        
+        Returns:
+            List of video file paths
+        """
+        video_dir = Path(video_dir)
+        
+        if not video_dir.exists():
+            print(f"✗ Local directory '{video_dir}' does not exist")
+            print("\nPlease either:")
+            print("1. Create a 'videos' directory and place your 8 video files there, OR")
+            print("2. Make sure the 'videos' branch exists in your repository")
+            return []
+        
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
+        video_files = []
+        
+        for ext in video_extensions:
+            video_files.extend(list(video_dir.glob(f'*{ext}')))
+            video_files.extend(list(video_dir.glob(f'*{ext.upper()}')))
+        
+        if video_files:
+            print(f"✓ Found {len(video_files)} video files in '{video_dir}':")
+            for vf in video_files:
+                print(f"  - {vf.name}")
+        else:
+            print(f"✗ No video files found in '{video_dir}'")
+        
+        return video_files
         
     def detect_players(self, frame, conf_threshold=0.3):
         """
@@ -374,11 +459,11 @@ if __name__ == "__main__":
         detection_model='yolov8n.pt',
         pose_model='yolov8n-pose.pt',
         repo_path='.',  # Current directory (assumes you're in the repo root)
-        video_branch='video'  # Branch containing the videos
+        video_branch='videos'  # Branch containing the videos
     )
     
-    # Option 1: Automatically fetch and process all videos from the 'video' branch
-    print("\nFetching and processing videos from 'video' branch...\n")
+    # Option 1: Automatically fetch and process all videos from the 'videos' branch
+    print("\nFetching and processing videos from 'videos' branch...\n")
     results = system.process_all_videos_from_branch(output_dir='outputs')
     
     # Print summary
