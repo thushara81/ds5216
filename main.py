@@ -3,31 +3,99 @@ import cv2
 import numpy as np
 from pathlib import Path
 import json
+import os
+import subprocess
 from datetime import datetime
 
 # Install required packages:
-# pip install torch torchvision opencv-python ultralytics
+# pip install torch torchvision opencv-python ultralytics gitpython
 
 from ultralytics import YOLO
+import git
 
 class PlayerDetectionSystem:
     """
     Complete system for player detection and keypoint detection in sports videos.
     Uses YOLOv8 for object detection and pose estimation.
+    Fetches videos from the 'video' branch of the GitHub repository.
     """
     
-    def __init__(self, detection_model='yolov8n.pt', pose_model='yolov8n-pose.pt'):
+    def __init__(self, detection_model='yolov8n.pt', pose_model='yolov8n-pose.pt', 
+                 repo_path='.', video_branch='video'):
         """
         Initialize the detection system.
         
         Args:
             detection_model: Path to YOLO detection model (or model name to download)
             pose_model: Path to YOLO pose estimation model (or model name to download)
+            repo_path: Path to the git repository (default: current directory)
+            video_branch: Name of the branch containing videos (default: 'video')
         """
         print("Loading models...")
         self.detector = YOLO(detection_model)
         self.pose_estimator = YOLO(pose_model)
         print("Models loaded successfully!")
+        
+        self.repo_path = Path(repo_path)
+        self.video_branch = video_branch
+        self.video_dir = Path('videos_temp')
+        
+    def fetch_videos_from_branch(self):
+        """
+        Fetch video files from the video branch without switching branches.
+        Uses git checkout to extract files from specific branch.
+        """
+        try:
+            # Create temporary directory for videos
+            self.video_dir.mkdir(exist_ok=True)
+            
+            print(f"Fetching videos from '{self.video_branch}' branch...")
+            
+            # Get list of video files in the video branch
+            result = subprocess.run(
+                ['git', 'ls-tree', '-r', '--name-only', self.video_branch],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            all_files = result.stdout.strip().split('\n')
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv']
+            video_files = [f for f in all_files if any(f.lower().endswith(ext) for ext in video_extensions)]
+            
+            print(f"Found {len(video_files)} video files in '{self.video_branch}' branch")
+            
+            # Checkout each video file from the video branch
+            downloaded_videos = []
+            for video_file in video_files:
+                try:
+                    output_path = self.video_dir / Path(video_file).name
+                    
+                    # Use git show to get file content from specific branch
+                    subprocess.run(
+                        ['git', 'show', f'{self.video_branch}:{video_file}'],
+                        cwd=self.repo_path,
+                        stdout=open(output_path, 'wb'),
+                        check=True
+                    )
+                    
+                    downloaded_videos.append(output_path)
+                    print(f"  ✓ Downloaded: {video_file}")
+                    
+                except subprocess.CalledProcessError as e:
+                    print(f"  ✗ Failed to download {video_file}: {e}")
+            
+            print(f"\nSuccessfully downloaded {len(downloaded_videos)} videos to '{self.video_dir}'")
+            return downloaded_videos
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error accessing git repository: {e}")
+            print(f"Make sure you're in a git repository and '{self.video_branch}' branch exists")
+            return []
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            return []
         
     def detect_players(self, frame, conf_threshold=0.3):
         """
@@ -223,7 +291,34 @@ class PlayerDetectionSystem:
                     cv2.line(frame, (int(pt1[0]), int(pt1[1])),
                             (int(pt2[0]), int(pt2[1])), (255, 0, 0), 2)
     
-    def process_multiple_videos(self, video_paths, output_dir='outputs'):
+    def process_all_videos_from_branch(self, output_dir='outputs'):
+        """
+        Fetch videos from the video branch and process all of them.
+        
+        Args:
+            output_dir: Directory to save outputs
+        
+        Returns:
+            Dictionary containing processing results for all videos
+        """
+        # Fetch videos from the video branch
+        video_paths = self.fetch_videos_from_branch()
+        
+        if not video_paths:
+            print("No videos found or downloaded from the video branch!")
+            return {}
+        
+        # Process all downloaded videos
+        return self.process_multiple_videos(video_paths, output_dir)
+    
+    def cleanup_temp_videos(self):
+        """
+        Clean up temporary video directory.
+        """
+        import shutil
+        if self.video_dir.exists():
+            shutil.rmtree(self.video_dir)
+            print(f"Cleaned up temporary directory: {self.video_dir}")
         """
         Process multiple videos.
         
@@ -271,34 +366,49 @@ class PlayerDetectionSystem:
 # Example usage
 if __name__ == "__main__":
     # Initialize the system
-    system = PlayerDetectionSystem()
+    print("="*60)
+    print("Player Detection and Keypoint Detection System")
+    print("="*60 + "\n")
     
-    # Process a single video
-    # result = system.process_video(
-    #     'path/to/your/video.mp4',
-    #     output_path='output_video.mp4',
-    #     visualize=True,
-    #     detect_poses=True
-    # )
+    system = PlayerDetectionSystem(
+        detection_model='yolov8n.pt',
+        pose_model='yolov8n-pose.pt',
+        repo_path='.',  # Current directory (assumes you're in the repo root)
+        video_branch='video'  # Branch containing the videos
+    )
     
-    # Process multiple videos
-    video_paths = [
-        'video1.mp4',
-        'video2.mp4',
-        'video3.mp4',
-        'video4.mp4',
-        'video5.mp4',
-        'video6.mp4',
-        'video7.mp4',
-        'video8.mp4'
-    ]
+    # Option 1: Automatically fetch and process all videos from the 'video' branch
+    print("\nFetching and processing videos from 'video' branch...\n")
+    results = system.process_all_videos_from_branch(output_dir='outputs')
     
-    results = system.process_multiple_videos(video_paths, output_dir='outputs')
-    
-    print("\nProcessing Summary:")
+    # Print summary
+    print("\n" + "="*60)
+    print("PROCESSING SUMMARY")
+    print("="*60)
     for video, result in results.items():
         if 'error' not in result:
             frames = result['video_info']['frames']
-            print(f"{video}: {frames} frames processed")
+            fps = result['video_info']['fps']
+            resolution = result['video_info']['resolution']
+            print(f"\n✓ {Path(video).name}")
+            print(f"  - Frames: {frames}")
+            print(f"  - FPS: {fps}")
+            print(f"  - Resolution: {resolution[0]}x{resolution[1]}")
         else:
-            print(f"{video}: ERROR - {result['error']}")
+            print(f"\n✗ {Path(video).name}")
+            print(f"  - ERROR: {result['error']}")
+    
+    print("\n" + "="*60)
+    print(f"All outputs saved to: outputs/")
+    print("="*60 + "\n")
+    
+    # Optional: Clean up temporary video files
+    # Uncomment the line below if you want to delete the downloaded videos after processing
+    # system.cleanup_temp_videos()
+    
+    # Option 2: Process specific videos manually
+    # video_paths = [
+    #     'path/to/video1.mp4',
+    #     'path/to/video2.mp4',
+    # ]
+    # results = system.process_multiple_videos(video_paths, output_dir='outputs')
